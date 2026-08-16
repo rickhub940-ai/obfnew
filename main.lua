@@ -1,5 +1,3 @@
--- main.lua
-
 local Lexer = require("lexer")
 local Parser = require("parser")
 local Compiler = require("compiler")
@@ -9,14 +7,6 @@ local Emitter = require("emit")
 local M = {}
 
 function M.obfuscate(source)
-    if type(source) ~= "string" then
-        error("source must be a string")
-    end
-
-    if source == "" then
-        error("source is empty")
-    end
-
     local lexer = Lexer.new(source)
     local tokens = lexer:run()
 
