@@ -1,6 +1,3 @@
--- compiler.lua
--- First custom VM bytecode compiler
-
 local Compiler = {}
 Compiler.__index = Compiler
 
@@ -9,6 +6,7 @@ function Compiler.new()
         code = {},
         consts = {},
         constMap = {},
+        locals = {},
     }, Compiler)
 end
 
@@ -34,70 +32,74 @@ function Compiler:emit(op, ...)
     }
 end
 
-function Compiler:compileExpression(tokens, i)
-    local token = tokens[i]
+function Compiler:compileExpr(node)
+    if node.type == "Number"
+        or node.type == "String" then
 
-    if token.kind == "number" then
-        local index = self:addConst(token.value)
-        self:emit("LOADK", index)
-        return i + 1
+        self:emit(
+            "LOADK",
+            self:addConst(node.value)
+        )
 
-    elseif token.kind == "string" then
-        local index = self:addConst(token.value)
-        self:emit("LOADK", index)
-        return i + 1
+    elseif node.type == "Boolean" then
 
-    elseif token.kind == "keyword" then
-        if token.value == "true" then
-            self:emit("LOADBOOL", true)
-            return i + 1
+        self:emit("LOADBOOL", node.value)
+
+    elseif node.type == "Nil" then
+
+        self:emit("LOADNIL")
+
+    elseif node.type == "Identifier" then
+
+        local index = self.locals[node.name]
+
+        if not index then
+            error("unknown local: " .. node.name)
         end
 
-        if token.value == "false" then
-            self:emit("LOADBOOL", false)
-            return i + 1
+        self:emit("GETLOCAL", index)
+
+    elseif node.type == "Binary" then
+
+        self:compileExpr(node.left)
+        self:compileExpr(node.right)
+
+        local map = {
+            ["+"] = "ADD",
+            ["-"] = "SUB",
+            ["*"] = "MUL",
+            ["/"] = "DIV",
+            ["%"] = "MOD",
+            ["^"] = "POW",
+        }
+
+        local opcode = map[node.op]
+
+        if not opcode then
+            error("unsupported operator: " .. node.op)
         end
 
-        if token.value == "nil" then
-            self:emit("LOADNIL")
-            return i + 1
-        end
+        self:emit(opcode)
+
+    else
+        error("unknown AST node: " .. tostring(node.type))
     end
-
-    error("unsupported expression: " .. tostring(token.value))
 end
 
-function Compiler:compile(tokens)
-    local i = 1
+function Compiler:compile(ast)
+    for _, stmt in ipairs(ast.body) do
 
-    while tokens[i].kind ~= "eof" do
-        local token = tokens[i]
+        if stmt.type == "Local" then
+            local index = #self.locals + 1
 
-        if token.kind == "keyword" and token.value == "local" then
-            local name = tokens[i + 1]
+            self.locals[stmt.name] = index
 
-            if not name or name.kind ~= "identifier" then
-                error("expected identifier after local")
-            end
+            self:compileExpr(stmt.value)
+            self:emit("SETLOCAL", index)
 
-            i = i + 2
-
-            if tokens[i].value ~= "=" then
-                error("expected '='")
-            end
-
-            i = i + 1
-
-            i = self:compileExpression(tokens, i)
-
-            self:emit("SETLOCAL", name.value)
-
-        else
-            i = self:compileExpression(tokens, i)
-        end
-
-        if tokens[i] and tokens[i].value == ";" then
-            i = i + 1
+        elseif stmt.type == "Expression" then
+            self:compileExpr(stmt.value)
+            self:emit("POP")
         end
     end
 
