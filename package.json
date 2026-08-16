@@ -1,0 +1,9 @@
+{
+  "name": "vm-obfuscator",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "fengari": "^0.1.4"
+  }
+}
