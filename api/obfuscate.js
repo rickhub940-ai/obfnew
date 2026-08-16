@@ -1,62 +1,56 @@
-import fs from "node:fs";
-import path from "node:path";
+import fengari from "fengari";
+import * as core from "fengari/src/fengaricore.js";
+import * as lauxlib from "fengari/src/lauxlib.js";
+import * as lualib from "fengari/src/lualib.js";
 
-import {
+const {
   luaL_newstate,
   luaL_openlibs,
   luaL_loadstring,
   lua_pcall,
   lua_tolstring,
   lua_settop
-} from "fengari";
+} = {
+  ...core,
+  ...lauxlib,
+  ...lualib
+};
 
-import {
+const {
   to_luastring,
   to_jsstring
-} from "fengari/src/fengaricore.js";
+} = core;
 
 
 /*
 |--------------------------------------------------------------------------
-| Paths
+| Helpers
 |--------------------------------------------------------------------------
 */
 
-const ROOT = process.cwd();
-
-const MAIN_LUA = path.join(
-  ROOT,
-  "main.lua"
-);
-
-
-/*
-|--------------------------------------------------------------------------
-| Lua helpers
-|--------------------------------------------------------------------------
-*/
-
-function getLuaError(L, prefix) {
+function luaError(L, prefix) {
   const value = lua_tolstring(L, -1);
 
+  let message = "unknown Lua error";
+
+  if (value) {
+    message = to_jsstring(value);
+  }
+
   return new Error(
-    `${prefix}: ${
-      value
-        ? to_jsstring(value)
-        : "unknown Lua error"
-    }`
+    `${prefix}: ${message}`
   );
 }
 
 
-function runLua(L, source, results = 0) {
+function runLua(L, source) {
   const status = luaL_loadstring(
     L,
     to_luastring(source)
   );
 
   if (status !== 0) {
-    throw getLuaError(
+    throw luaError(
       L,
       "Lua load error"
     );
@@ -65,12 +59,12 @@ function runLua(L, source, results = 0) {
   const result = lua_pcall(
     L,
     0,
-    results,
+    0,
     0
   );
 
   if (result !== 0) {
-    throw getLuaError(
+    throw luaError(
       L,
       "Lua runtime error"
     );
@@ -80,124 +74,42 @@ function runLua(L, source, results = 0) {
 
 /*
 |--------------------------------------------------------------------------
-| Create Lua VM
-|--------------------------------------------------------------------------
-*/
-
-function createLuaState() {
-  const L = luaL_newstate();
-
-  if (!L) {
-    throw new Error(
-      "Failed to create Lua state"
-    );
-  }
-
-  luaL_openlibs(L);
-
-  /*
-   * Lua files are located directly
-   * in the project root.
-   *
-   * Example:
-   *
-   * ./main.lua
-   * ./lexer.lua
-   * ./parser.lua
-   * ./compiler.lua
-   */
-
-  const rootPath = ROOT
-    .replace(/\\/g, "/")
-    .replace(/"/g, '\\"');
-
-  runLua(
-    L,
-    `
-      package.path =
-        "${rootPath}/?.lua;" ..
-        package.path
-    `
-  );
-
-  return L;
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| Main API
+| API
 |--------------------------------------------------------------------------
 */
 
 export default async function handler(req, res) {
 
-  /*
-   * Only POST
-   */
-
   if (req.method !== "POST") {
     return res.status(405).json({
       success: false,
-      error: "Method Not Allowed. Use POST."
+      error: "Method Not Allowed"
     });
   }
 
-
   let L = null;
 
-
   try {
-
-    /*
-     * Parse request body
-     */
 
     let body = req.body;
 
     if (typeof body === "string") {
-      try {
-        body = JSON.parse(body);
-      } catch {
-        return res.status(400).json({
-          success: false,
-          error: "Invalid JSON."
-        });
-      }
+      body = JSON.parse(body);
     }
 
-
-    /*
-     * Get source code
-     */
-
     const source = body?.code;
-
 
     if (typeof source !== "string") {
       return res.status(400).json({
         success: false,
-        error: "Missing 'code' string."
+        error: "Missing 'code' string"
       });
     }
-
 
     if (!source.trim()) {
       return res.status(400).json({
         success: false,
-        error: "Code is empty."
-      });
-    }
-
-
-    /*
-     * Check main.lua
-     */
-
-    if (!fs.existsSync(MAIN_LUA)) {
-      return res.status(500).json({
-        success: false,
-        error: "main.lua not found."
+        error: "Code is empty"
       });
     }
 
@@ -206,32 +118,51 @@ export default async function handler(req, res) {
      * Create Lua state
      */
 
-    L = createLuaState();
+    L = luaL_newstate();
+
+    if (!L) {
+      throw new Error(
+        "Failed to create Lua state"
+      );
+    }
+
+    luaL_openlibs(L);
 
 
     /*
-     * Safely pass source to Lua.
-     *
-     * We use JSON encoding so quotes,
-     * newlines and backslashes are escaped.
+     * Root directory
      */
 
-    const encodedSource =
+    const root =
+      process.cwd()
+        .replace(/\\/g, "/")
+        .replace(/"/g, '\\"');
+
+
+    /*
+     * Tell Lua where .lua files are.
+     */
+
+    runLua(
+      L,
+      `
+        package.path =
+          "${root}/?.lua;" ..
+          package.path
+      `
+    );
+
+
+    /*
+     * Safely encode source
+     */
+
+    const encoded =
       JSON.stringify(source);
 
 
     /*
-     * Execute main.lua through require().
-     *
-     * main.lua should return:
-     *
-     * local M = {}
-     *
-     * function M.obfuscate(source)
-     *     ...
-     * end
-     *
-     * return M
+     * Run main.lua
      */
 
     const runner = `
@@ -243,18 +174,18 @@ export default async function handler(req, res) {
 
       if type(VM.obfuscate) ~= "function" then
         error(
-          "main.lua must provide VM.obfuscate"
+          "main.lua must contain VM.obfuscate"
         )
       end
 
-      local source = ${encodedSource}
+      local source = ${encoded}
 
       local output =
         VM.obfuscate(source)
 
       if type(output) ~= "string" then
         error(
-          "VM.obfuscate() must return a string"
+          "VM.obfuscate must return string"
         )
       end
 
@@ -266,35 +197,34 @@ export default async function handler(req, res) {
      * Load runner
      */
 
-    const loadStatus = luaL_loadstring(
-      L,
-      to_luastring(runner)
-    );
-
+    const loadStatus =
+      luaL_loadstring(
+        L,
+        to_luastring(runner)
+      );
 
     if (loadStatus !== 0) {
-      throw getLuaError(
+      throw luaError(
         L,
-        "Failed to load obfuscator"
+        "Failed to load main"
       );
     }
 
 
     /*
-     * Execute runner
-     * and request 1 return value.
+     * Execute and return 1 result
      */
 
-    const callStatus = lua_pcall(
-      L,
-      0,
-      1,
-      0
-    );
-
+    const callStatus =
+      lua_pcall(
+        L,
+        0,
+        1,
+        0
+      );
 
     if (callStatus !== 0) {
-      throw getLuaError(
+      throw luaError(
         L,
         "Obfuscation failed"
       );
@@ -302,12 +232,14 @@ export default async function handler(req, res) {
 
 
     /*
-     * Get result
+     * Get Lua return value
      */
 
     const result =
-      lua_tolstring(L, -1);
-
+      lua_tolstring(
+        L,
+        -1
+      );
 
     if (!result) {
       throw new Error(
@@ -315,14 +247,9 @@ export default async function handler(req, res) {
       );
     }
 
-
     const output =
       to_jsstring(result);
 
-
-    /*
-     * Clear Lua stack
-     */
 
     lua_settop(L, 0);
 
@@ -336,7 +263,6 @@ export default async function handler(req, res) {
       code: output
     });
 
-
   } catch (error) {
 
     console.error(
@@ -344,13 +270,11 @@ export default async function handler(req, res) {
       error
     );
 
-
     if (L) {
       try {
         lua_settop(L, 0);
       } catch {}
     }
-
 
     return res.status(500).json({
       success: false,
@@ -359,4 +283,4 @@ export default async function handler(req, res) {
         String(error)
     });
   }
-  }
+}
