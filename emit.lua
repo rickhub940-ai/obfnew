@@ -1,3 +1,5 @@
+-- emit.lua
+
 local Symbols = require("symbols")
 
 local Emitter = {}
@@ -48,20 +50,19 @@ local function shuffled()
     return map
 end
 
-local function quote(s)
-    return string.format("%q", s)
+local function quote(value)
+    return string.format("%q", value)
 end
 
-local function encodeString(s, key)
+local function encodeString(value, key)
     local out = {}
 
-    for i = 1, #s do
-        local b = string.byte(s, i)
+    for i = 1, #value do
+        local b = string.byte(value, i)
 
-        out[#out + 1] =
-            string.char(
-                bit32.bxor(b, key)
-            )
+        out[i] = string.char(
+            bit32.bxor(b, key)
+        )
     end
 
     return quote(table.concat(out))
@@ -106,9 +107,11 @@ local function emitCode(code, map)
                 parts[#parts + 1] =
                     value and "true" or "false"
 
+            elseif value == nil then
+                parts[#parts + 1] = "nil"
+
             else
-                parts[#parts + 1] =
-                    tostring(value)
+                parts[#parts + 1] = tostring(value)
             end
         end
 
@@ -121,26 +124,26 @@ end
 
 function Emitter.generate(program)
     local map = shuffled()
-
     local key = math.random(16, 240)
 
+    -- identifier ปลอดภัย
     local vmName =
-        "_" .. Symbols.generate(5, 10)
+        "_" .. Symbols.identifier(5, 10)
 
     local codeName =
-        "_" .. Symbols.generate(5, 10)
+        "_" .. Symbols.identifier(5, 10)
 
     local constName =
-        "_" .. Symbols.generate(5, 10)
+        "_" .. Symbols.identifier(5, 10)
 
     local stackName =
-        "_" .. Symbols.generate(5, 10)
+        "_" .. Symbols.identifier(5, 10)
 
     local pcName =
-        "_" .. Symbols.generate(5, 10)
+        "_" .. Symbols.identifier(5, 10)
 
-    local opName =
-        "_" .. Symbols.generate(5, 10)
+    local topName =
+        "_" .. Symbols.identifier(5, 10)
 
     local junk = Symbols.pool(6)
 
@@ -154,6 +157,9 @@ function Emitter.generate(program)
 
     lines[#lines + 1] =
         "local " .. stackName .. "={}"
+
+    lines[#lines + 1] =
+        "local " .. topName .. "=0"
 
     lines[#lines + 1] =
         "local " .. pcName .. "=1"
@@ -174,20 +180,15 @@ function Emitter.generate(program)
     lines[#lines + 1] =
         "local _d=function(v)local r={}for i=1,#v do r[i]=string.char(bit32.bxor(string.byte(v,i),_k))end return table.concat(r)end"
 
+    local junkParts = {}
+
+    for i, value in ipairs(junk) do
+        junkParts[i] = quote(value)
+    end
+
     lines[#lines + 1] =
         "local _junk={" ..
-        table.concat(
-            (function()
-                local t = {}
-
-                for i, v in ipairs(junk) do
-                    t[i] = quote(v)
-                end
-
-                return t
-            end)(),
-            ","
-        ) ..
+        table.concat(junkParts, ",") ..
         "}"
 
     lines[#lines + 1] =
@@ -223,40 +224,65 @@ function Emitter.generate(program)
         "[" .. pcName .. "]"
 
     lines[#lines + 1] =
+        "if not _i then error('VM program counter out of range',0) end"
+
+    lines[#lines + 1] =
         "local _o=_i[1]"
 
+    -- LOADK
     lines[#lines + 1] =
         "if _o==" .. map.LOADK .. " then " ..
-        "local v=" .. constName ..
-        "[_i[2]];" ..
+        "local v=" .. constName .. "[_i[2]];" ..
         "if type(v)=='string' then v=_d(v) end;" ..
-        stackName .. "[#" .. stackName .. "+1]=v;" ..
+        topName .. "=" .. topName .. "+1;" ..
+        stackName .. "[" .. topName .. "]=v;" ..
         pcName .. "=" .. pcName .. "+1"
 
+    -- LOADNIL
     lines[#lines + 1] =
         "elseif _o==" .. map.LOADNIL .. " then " ..
-        stackName .. "[#" .. stackName .. "+1]=nil;" ..
+        topName .. "=" .. topName .. "+1;" ..
+        stackName .. "[" .. topName .. "]=nil;" ..
         pcName .. "=" .. pcName .. "+1"
 
+    -- LOADBOOL
     lines[#lines + 1] =
         "elseif _o==" .. map.LOADBOOL .. " then " ..
-        stackName .. "[#" .. stackName .. "+1]=_i[2];" ..
+        topName .. "=" .. topName .. "+1;" ..
+        stackName .. "[" .. topName .. "]=_i[2];" ..
         pcName .. "=" .. pcName .. "+1"
 
+    -- GETLOCAL
     lines[#lines + 1] =
         "elseif _o==" .. map.GETLOCAL .. " then " ..
-        stackName .. "[#" .. stackName .. "+1]=_l[_i[2]];" ..
+        topName .. "=" .. topName .. "+1;" ..
+        stackName .. "[" .. topName .. "]=_l[_i[2]];" ..
         pcName .. "=" .. pcName .. "+1"
 
+    -- SETLOCAL
     lines[#lines + 1] =
         "elseif _o==" .. map.SETLOCAL .. " then " ..
-        "local v=table.remove(" .. stackName .. ");" ..
-        "_l[_i[2]]=v;" ..
+        "_l[_i[2]]=" .. stackName .. "[" .. topName .. "];" ..
+        stackName .. "[" .. topName .. "]=nil;" ..
+        topName .. "=" .. topName .. "-1;" ..
         pcName .. "=" .. pcName .. "+1"
 
+    -- POP
     lines[#lines + 1] =
         "elseif _o==" .. map.POP .. " then " ..
-        "table.remove(" .. stackName .. ");" ..
+        "if " .. topName .. ">0 then " ..
+        stackName .. "[" .. topName .. "]=nil;" ..
+        topName .. "=" .. topName .. "-1;" ..
+        "end;" ..
+        pcName .. "=" .. pcName .. "+1"
+
+    -- DUP
+    lines[#lines + 1] =
+        "elseif _o==" .. map.DUP .. " then " ..
+        "if " .. topName .. "<1 then error('VM stack underflow',0) end;" ..
+        topName .. "=" .. topName .. "+1;" ..
+        stackName .. "[" .. topName .. "]=" ..
+        stackName .. "[" .. topName .. "-1];" ..
         pcName .. "=" .. pcName .. "+1"
 
     local operations = {
@@ -271,13 +297,16 @@ function Emitter.generate(program)
     for name, expression in pairs(operations) do
         lines[#lines + 1] =
             "elseif _o==" .. map[name] .. " then " ..
-            "local b=table.remove(" .. stackName .. ");" ..
-            "local a=table.remove(" .. stackName .. ");" ..
-            stackName .. "[#" .. stackName .. "+1]=" ..
-            expression .. ";" ..
+            "if " .. topName .. "<2 then error('VM stack underflow',0) end;" ..
+            "local b=" .. stackName .. "[" .. topName .. "];" ..
+            "local a=" .. stackName .. "[" .. topName .. "-1];" ..
+            stackName .. "[" .. topName .. "-1]=" .. expression .. ";" ..
+            stackName .. "[" .. topName .. "]=nil;" ..
+            topName .. "=" .. topName .. "-1;" ..
             pcName .. "=" .. pcName .. "+1"
     end
 
+    -- HALT
     lines[#lines + 1] =
         "elseif _o==" .. map.HALT .. " then " ..
         "_r=true"
@@ -291,7 +320,7 @@ function Emitter.generate(program)
     lines[#lines + 1] =
         "return " ..
         stackName ..
-        "[#" .. stackName .. "]"
+        "[" .. topName .. "]"
 
     lines[#lines + 1] =
         "end"
