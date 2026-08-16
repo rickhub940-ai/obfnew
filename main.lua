@@ -1,6 +1,4 @@
-math.randomseed(
-    os.time() + math.floor(os.clock() * 1000000)
-)
+-- main.lua
 
 local Lexer = require("lexer")
 local Parser = require("parser")
@@ -8,23 +6,29 @@ local Compiler = require("compiler")
 local Optimizer = require("optimizer")
 local Emitter = require("emit")
 
-local source = [[
-local a = 10
-local b = 20
-a + b
-]]
+local M = {}
 
-local lexer = Lexer.new(source)
-local tokens = lexer:run()
+function M.obfuscate(source)
+    if type(source) ~= "string" then
+        error("source must be a string")
+    end
 
-local parser = Parser.new(tokens)
-local ast = parser:parse()
+    if source == "" then
+        error("source is empty")
+    end
 
-local compiler = Compiler.new()
-local program = compiler:compile(ast)
+    local lexer = Lexer.new(source)
+    local tokens = lexer:run()
 
-program = Optimizer.optimize(program)
+    local parser = Parser.new(tokens)
+    local ast = parser:parse()
 
-local output = Emitter.generate(program)
+    local compiler = Compiler.new()
+    local program = compiler:compile(ast)
 
-print(output)
+    program = Optimizer.optimize(program)
+
+    return Emitter.generate(program)
+end
+
+return M
