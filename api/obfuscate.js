@@ -1,85 +1,50 @@
-import fengari from "fengari";
-import * as core from "fengari/src/fengaricore.js";
-import * as lauxlib from "fengari/src/lauxlib.js";
-import * as lualib from "fengari/src/lualib.js";
-
-const {
-  luaL_newstate,
-  luaL_openlibs,
-  luaL_loadstring,
-  lua_pcall,
-  lua_tolstring,
-  lua_settop
-} = {
-  ...core,
-  ...lauxlib,
-  ...lualib
-};
-
-const {
+import {
+  lua,
+  lauxlib,
+  lualib,
   to_luastring,
   to_jsstring
-} = core;
+} from "fengari";
 
-
-/*
-|--------------------------------------------------------------------------
-| Helpers
-|--------------------------------------------------------------------------
-*/
-
-function luaError(L, prefix) {
-  const value = lua_tolstring(L, -1);
-
-  let message = "unknown Lua error";
-
-  if (value) {
-    message = to_jsstring(value);
-  }
+function getLuaError(L, prefix) {
+  const msg = lauxlib.luaL_tolstring(L, -1, null);
 
   return new Error(
-    `${prefix}: ${message}`
+    `${prefix}: ${to_jsstring(msg)}`
   );
 }
 
-
-function runLua(L, source) {
-  const status = luaL_loadstring(
+function loadLua(L, source) {
+  const status = lauxlib.luaL_loadstring(
     L,
     to_luastring(source)
   );
 
-  if (status !== 0) {
-    throw luaError(
+  if (status !== lua.LUA_OK) {
+    throw getLuaError(
       L,
       "Lua load error"
     );
   }
+}
 
-  const result = lua_pcall(
+function callLua(L, nargs, nresults) {
+  const status = lua.lua_pcall(
     L,
-    0,
-    0,
+    nargs,
+    nresults,
     0
   );
 
-  if (result !== 0) {
-    throw luaError(
+  if (status !== lua.LUA_OK) {
+    throw getLuaError(
       L,
       "Lua runtime error"
     );
   }
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| API
-|--------------------------------------------------------------------------
-*/
-
 export default async function handler(req, res) {
-
   if (req.method !== "POST") {
     return res.status(405).json({
       success: false,
@@ -87,10 +52,9 @@ export default async function handler(req, res) {
     });
   }
 
-  let L = null;
+  let L;
 
   try {
-
     let body = req.body;
 
     if (typeof body === "string") {
@@ -102,7 +66,7 @@ export default async function handler(req, res) {
     if (typeof source !== "string") {
       return res.status(400).json({
         success: false,
-        error: "Missing 'code' string"
+        error: "Missing code"
       });
     }
 
@@ -113,12 +77,11 @@ export default async function handler(req, res) {
       });
     }
 
-
     /*
      * Create Lua state
      */
 
-    L = luaL_newstate();
+    L = lauxlib.luaL_newstate();
 
     if (!L) {
       throw new Error(
@@ -126,137 +89,107 @@ export default async function handler(req, res) {
       );
     }
 
-    luaL_openlibs(L);
-
+    lualib.luaL_openlibs(L);
 
     /*
-     * Root directory
+     * Add project root to package.path
      */
 
     const root =
       process.cwd()
-        .replace(/\\/g, "/")
-        .replace(/"/g, '\\"');
+        .replace(/\\/g, "/");
 
-
-    /*
-     * Tell Lua where .lua files are.
-     */
-
-    runLua(
+    loadLua(
       L,
       `
         package.path =
           "${root}/?.lua;" ..
+          "${root}/?/init.lua;" ..
           package.path
       `
     );
 
+    callLua(
+      L,
+      0,
+      0
+    );
 
     /*
-     * Safely encode source
+     * Escape source safely
      */
 
     const encoded =
       JSON.stringify(source);
 
-
     /*
-     * Run main.lua
+     * Load main.lua
      */
 
     const runner = `
-      local VM = require("main")
+      local Main = require("main")
 
-      if type(VM) ~= "table" then
+      if type(Main) ~= "table" then
         error("main.lua must return a table")
       end
 
-      if type(VM.obfuscate) ~= "function" then
+      if type(Main.obfuscate) ~= "function" then
         error(
-          "main.lua must contain VM.obfuscate"
+          "main.lua must provide obfuscate(source)"
         )
       end
 
-      local source = ${encoded}
+      local result =
+        Main.obfuscate(${encoded})
 
-      local output =
-        VM.obfuscate(source)
-
-      if type(output) ~= "string" then
+      if type(result) ~= "string" then
         error(
-          "VM.obfuscate must return string"
+          "obfuscate() must return a string"
         )
       end
 
-      return output
+      return result
     `;
 
+    loadLua(
+      L,
+      runner
+    );
 
     /*
-     * Load runner
+     * Execute Lua
      */
 
-    const loadStatus =
-      luaL_loadstring(
-        L,
-        to_luastring(runner)
-      );
-
-    if (loadStatus !== 0) {
-      throw luaError(
-        L,
-        "Failed to load main"
-      );
-    }
-
+    callLua(
+      L,
+      0,
+      1
+    );
 
     /*
-     * Execute and return 1 result
-     */
-
-    const callStatus =
-      lua_pcall(
-        L,
-        0,
-        1,
-        0
-      );
-
-    if (callStatus !== 0) {
-      throw luaError(
-        L,
-        "Obfuscation failed"
-      );
-    }
-
-
-    /*
-     * Get Lua return value
+     * Read returned string
      */
 
     const result =
-      lua_tolstring(
+      lauxlib.luaL_tolstring(
         L,
-        -1
+        -1,
+        null
       );
 
     if (!result) {
       throw new Error(
-        "Obfuscator returned no output"
+        "Obfuscator returned no result"
       );
     }
 
     const output =
       to_jsstring(result);
 
-
-    lua_settop(L, 0);
-
-
-    /*
-     * Response
-     */
+    lua.lua_settop(
+      L,
+      0
+    );
 
     return res.status(200).json({
       success: true,
@@ -269,12 +202,6 @@ export default async function handler(req, res) {
       "[VM-OBFUSCATOR]",
       error
     );
-
-    if (L) {
-      try {
-        lua_settop(L, 0);
-      } catch {}
-    }
 
     return res.status(500).json({
       success: false,
