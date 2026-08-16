@@ -1,22 +1,45 @@
 -- symbols.lua
--- Random English + #@^!¢0 generator
--- ^ ห้ามติดกัน
+-- Identifier-safe random names + junk symbols
+-- ^ จะไม่ติดกัน
 
 local M = {}
 
 local LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+local ALNUM = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 local SYMBOLS = "#@^!¢0"
+
+local function randomFrom(str)
+    local i = math.random(1, #str)
+    return str:sub(i, i)
+end
 
 local function randomChar()
     if math.random(1, 100) <= 65 then
-        local i = math.random(1, #LETTERS)
-        return LETTERS:sub(i, i)
+        return randomFrom(LETTERS)
     end
 
-    local i = math.random(1, #SYMBOLS)
-    return SYMBOLS:sub(i, i)
+    return randomFrom(SYMBOLS)
 end
 
+-- ใช้สำหรับ Lua/Luau identifier
+function M.identifier(minLen, maxLen)
+    minLen = minLen or 8
+    maxLen = maxLen or 18
+
+    local len = math.random(minLen, maxLen)
+    local out = {}
+
+    -- ตัวแรกต้องเป็นตัวอักษร
+    out[1] = randomFrom(LETTERS)
+
+    for i = 2, len do
+        out[i] = randomFrom(ALNUM)
+    end
+
+    return table.concat(out)
+end
+
+-- ใช้สำหรับ junk/data เท่านั้น
 function M.generate(minLen, maxLen)
     minLen = minLen or 8
     maxLen = maxLen or 18
@@ -32,7 +55,7 @@ function M.generate(minLen, maxLen)
             ch = randomChar()
         until not (ch == "^" and previousCaret)
 
-        out[#out + 1] = ch
+        out[i] = ch
         previousCaret = ch == "^"
     end
 
